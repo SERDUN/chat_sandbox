@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+  <meta charset="UTF-8" />
+  <title>CLI Chat</title>
+  <style>
+    body {
+      background: #000;
+      color: #0f0;
+      font-family: monospace;
+      margin: 0;
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+    }
+    #chat {
+      flex: 1;
+      padding: 10px;
+      overflow-y: auto;
+      white-space: pre-wrap;
+    }
+    #input-line {
+      border: none;
+      padding: 10px;
+      font-family: monospace;
+      font-size: 16px;
+      color: #0f0;
+      background: #111;
+      border-top: 1px solid #333;
+    }
+    #input-line:focus {
+      outline: none;
+    }
+  </style>
+</head>
+<body>
+
+<div id="chat"></div>
+<input id="input-line" placeholder="" autocomplete="off" autofocus />
+
+<script>
+const SERVER_URL = 'https://chat-sanbox.fly.dev';
+
+let userId = null;
+let username = '';
+let lastMessageTime = 0;
+let users = [];
+
+const chat = document.getElementById('chat');
+const input = document.getElementById('input-line');
+const history = [];
+
+let phase = 'name'; // 'name' → 'chat'
+
+function print(line) {
+  history.push(line);
+  chat.innerText = history.join('\n');
+  chat.scrollTop = chat.scrollHeight;
+}
+
+function updatePrompt() {
+  input.placeholder = phase === 'name' ? 'Provide your name:' : 'Я: ';
+}
+
+async function apiPost(url, body) {
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body)
+  });
+  if (!res.ok) throw new Error(`POST ${url} failed with ${res.status}`);
+  return res.json();
+}
+
+async function apiGet(url) {
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`GET ${url} failed with ${res.status}`);
+  return res.json();
+}
+
+async function register(name) {
+  const { userId: id } = await apiPost(`${SERVER_URL}/register`, { name });
+  userId = id;
+
+  const { users: allUsers } = await apiGet(`${SERVER_URL}/users`);
+  users = allUsers;
+  const exists = users.some(u => u.userId === userId);
+
+  if (!exists) {
+    print(`Registration failed: server did not acknowledge userId`);
+    throw new Error('Invalid userId');
+  }
+}
+
+async function sendMessage(text) {
+  try {
+    await apiPost(`${SERVER_URL}/send`, { userId, text });
+  } catch (err) {
+    print(`Failed to send message: ${err.message}`);
+  }
+}
+
+function getUserName(id) {
+  return users.find(u => u.userId === id)?.name || 'Unknown';
+}
+
+async function fetchMessages() {
+  try {
+    const [msgRes, evtRes] = await Promise.all([
+      apiGet(`${SERVER_URL}/messages?userId=${userId}&since=${lastMessageTime}`),
+      apiGet(`${SERVER_URL}/events?userId=${userId}&since=${lastMessageTime}`)
+    ]);
+
+    const messages = Array.isArray(msgRes.messages) ? msgRes.messages : [];
+    const events = Array.isArray(evtRes.events) ? evtRes.events : [];
+
+    const all = [
+      ...messages.map(m => ({ ...m, type: 'message' })),
+      ...events.map(e => ({ ...e, type: 'event' }))
+    ].sort((a, b) => a.timestamp - b.timestamp);
+
+    for (const entry of all) {
+      if (entry.userId === userId) continue;
+      const name = getUserName(entry.userId);
+      if (entry.type === 'event') {
+        if (entry.eventType === 'registered') {
+          print(`👤 ${name} joined the chat`);
+        } else {
+          print(`🔔 ${name}: ${entry.text}`);
+        }
+      } else {
+        print(`💬 ${name}: ${entry.text}`);
+      }
+
+      lastMessageTime = Math.max(lastMessageTime, entry.timestamp);
+    }
+  } catch (err) {
+    print(`⚠️ Failed to fetch messages: ${err.message}`);
+  }
+}
+
+input.addEventListener('keydown', async (e) => {
+  if (e.key === 'Enter') {
+    const text = input.value.trim();
+    if (!text) return;
+
+    if (phase === 'name') {
+      username = text;
+      input.value = '';
+      try {
+        await register(username);
+        print(`🟢 You are registered as "${username}"`);
+        phase = 'chat';
+        updatePrompt();
+        await fetchMessages();
+        setInterval(fetchMessages, 2000);
+      } catch (err) {
+        print(`${err.message}`);
+      }
+      return;
+    }
+
+    await sendMessage(text);
+    print(`💬 Ви: ${text}`);
+    input.value = '';
+  }
+});
+
+updatePrompt();
+print('🖥️ Welcome to CLI Chat!');
+print('Provide your name:');
+</script>
+</body>
+</html>
